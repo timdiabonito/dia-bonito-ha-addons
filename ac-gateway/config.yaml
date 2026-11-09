@@ -1,0 +1,33 @@
+name: Dia Bonito AC gateway
+version: "1.0.0"
+slug: dia_bonito_ac_gateway
+description: Lets guests on the island Wi-Fi run their own room air conditioning from the guest app.
+url: https://github.com/timdiabonito/dia-bonito-ha-addons
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+map:
+  - ssl:ro
+ports:
+  8443/tcp: 8443
+ports_description:
+  8443/tcp: Guest phones on the island Wi-Fi (HTTPS)
+options:
+  webhook_id: ""
+  pass_secret: ""
+  origins:
+    - https://guest.diabonitoresorts.com
+    - https://guests.diabonitoresorts.com
+  cert_file: /ssl/fullchain.pem
+  key_file: /ssl/privkey.pem
+schema:
+  webhook_id: password
+  pass_secret: password
+  origins:
+    - str
+  cert_file: str
+  key_file: str
