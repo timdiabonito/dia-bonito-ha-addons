@@ -167,6 +167,10 @@ var COPY = {
   off_island: {
     es: "Con\xE9ctate al Wi-Fi de la isla para usar el control del aire.",
     en: "Join the island Wi-Fi to use the air conditioning remote."
+  },
+  unavailable: {
+    es: "El control del aire no est\xE1 disponible en este momento.",
+    en: "The air conditioning remote is not available right now."
   }
 };
 function answer(status) {
@@ -227,6 +231,9 @@ async function handleAcCommand(caller, body, ports) {
   if (recent >= AC_LIMIT) {
     await ports.record({ ...base, status: "throttled", command: checked.command });
     return { httpStatus: 200, body: answer("throttled") };
+  }
+  if (ports.isAvailable && !await ports.isAvailable().catch(() => true)) {
+    return { httpStatus: 200, body: answer("unavailable") };
   }
   if (checked.command.turbo) {
     const last = await ports.lastTurboAt(slug);
@@ -350,6 +357,12 @@ function portsFor(pass, env) {
     },
     // The phone tells the cloud when it has signal (action 'problem'), which writes the alert for the team.
     markUnconfirmed: async () => true,
+    async isAvailable() {
+      const res = await env.ha("/api/states/input_boolean.guest_mode");
+      if (!res || !res.ok) return true;
+      const j = await res.json().catch(() => null);
+      return j?.state !== "off";
+    },
     async callHomeAssistant(order) {
       if (!env.webhookId) return false;
       const res = await env.ha(`/api/webhook/${encodeURIComponent(env.webhookId)}`, {
