@@ -256,7 +256,16 @@ async function handleAcCommand(caller, body, ports) {
 var OPTIONS_FILE = process.env.OPTIONS_FILE ?? "/data/options.json";
 var STATE_FILE = process.env.STATE_FILE ?? "/data/ac-gateway-state.json";
 var HA_BASE = (process.env.HA_BASE ?? "http://supervisor/core").replace(/\/+$/, "");
-var HA_TOKEN = process.env.SUPERVISOR_TOKEN ?? process.env.HA_TOKEN ?? "";
+function readHaToken() {
+  const fromEnv = process.env.SUPERVISOR_TOKEN ?? process.env.HA_TOKEN;
+  if (fromEnv) return fromEnv;
+  try {
+    return readFileSync("/run/s6/container_environment/SUPERVISOR_TOKEN", "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+var HA_TOKEN = readHaToken();
 var HA_TIMEOUT_MS = 8e3;
 var MAX_BODY = 4096;
 function loadOptions() {
@@ -372,7 +381,10 @@ async function handle(req, opts, env) {
   const cors = corsHeaders(req.origin, opts.origins);
   const reply = (status, body2) => ({ status, headers: { ...NO_STORE, ...cors }, body: JSON.stringify(body2) });
   if (req.method === "OPTIONS") return { status: 204, headers: cors, body: "" };
-  if (req.method === "GET" && req.path === "/ping") return reply(200, { ok: true, island: true });
+  if (req.method === "GET" && req.path === "/ping") {
+    const probe = await env.ha("/api/");
+    return reply(200, { ok: true, island: true, ha: probe ? probe.status : 0 });
+  }
   if (req.method !== "POST" || req.path !== "/ac") return reply(404, { error: "not_found" });
   if (req.origin && !opts.origins.includes(req.origin)) return reply(403, answer("refused"));
   let body;
