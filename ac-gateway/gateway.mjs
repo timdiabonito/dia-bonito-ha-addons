@@ -40,6 +40,11 @@ async function key(secret) {
   return crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 var HEADER = b64url(enc.encode(JSON.stringify({ alg: "HS256", typ: "ACP" })));
+async function signPass(claims, secret) {
+  const body = `${HEADER}.${b64url(enc.encode(JSON.stringify(claims)))}`;
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await key(secret), enc.encode(body)));
+  return `${body}.${b64url(sig)}`;
+}
 async function verifyPass(token, secret, nowMs) {
   if (typeof token !== "string" || token.length > 4096 || !secret) return null;
   const parts = token.split(".");
@@ -281,6 +286,34 @@ refresh();setInterval(()=>refresh(),5000);
 </script></body></html>`;
 
 // island/ac-gateway/src/gateway.ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+function testCode(secret, expMinutes) {
+  const mac = createHmac("sha256", secret).update(`living-room-test|${expMinutes}`).digest("hex").slice(0, 10);
+  return expMinutes.toString(36).padStart(5, "0") + mac;
+}
+async function passFromTestCode(code, secret, nowMs) {
+  if (!/^[0-9a-z]{5}[0-9a-f]{10}$/.test(code)) return null;
+  const expMinutes = parseInt(code.slice(0, 5), 36);
+  const expSeconds = expMinutes * 60;
+  if (expSeconds * 1e3 <= nowMs || expSeconds * 1e3 > nowMs + 4 * 36e5) return null;
+  const want = Buffer.from(testCode(secret, expMinutes));
+  const have = Buffer.from(code);
+  if (want.length !== have.length || !timingSafeEqual(want, have)) return null;
+  const today = panamaToday(nowMs);
+  return signPass(
+    {
+      v: 1,
+      stay_id: "tim-test",
+      guest_id: "tim-test",
+      arrives_on: today,
+      departs_on: today,
+      rooms: [{ slug: "living-room", name_es: "Sala", name_en: "Living Room" }],
+      iat: Math.floor(nowMs / 1e3),
+      exp: expSeconds
+    },
+    secret
+  );
+}
 var OPTIONS_FILE = process.env.OPTIONS_FILE ?? "/data/options.json";
 var STATE_FILE = process.env.STATE_FILE ?? "/data/ac-gateway-state.json";
 var HA_BASE = (process.env.HA_BASE ?? "http://supervisor/core").replace(/\/+$/, "");
@@ -420,6 +453,11 @@ async function handle(req, opts, env) {
     const probe = await env.ha("/api/");
     return reply(200, { ok: true, island: true, ha: probe ? probe.status : 0 });
   }
+  if (req.method === "GET" && req.path.startsWith("/t/")) {
+    const pass2 = await passFromTestCode(req.path.slice(3), opts.pass_secret, env.now());
+    if (!pass2) return { status: 404, headers: { "Cache-Control": "no-store", "Content-Type": "text/plain" }, body: "Not found" };
+    return { status: 302, headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", Location: `/test#${pass2}` }, body: "" };
+  }
   if (req.method === "GET" && req.path === "/test") {
     return { status: 200, headers: { "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" }, body: TEST_PAGE };
   }
@@ -557,5 +595,6 @@ export {
   loadOptions,
   panamaToday,
   portsFor,
-  start
+  start,
+  testCode
 };

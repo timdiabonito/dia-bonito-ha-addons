@@ -1,5 +1,5 @@
 name: Dia Bonito AC gateway
-version: "0.1.3"
+version: "0.1.4"
 slug: dia_bonito_ac_gateway
 description: Lets guests on the island Wi-Fi run their own room air conditioning from the guest app.
 url: https://github.com/timdiabonito/dia-bonito-ha-addons
