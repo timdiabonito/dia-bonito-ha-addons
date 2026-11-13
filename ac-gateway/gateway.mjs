@@ -171,6 +171,10 @@ var COPY = {
   unavailable: {
     es: "El control del aire no est\xE1 disponible en este momento.",
     en: "The air conditioning remote is not available right now."
+  },
+  staff_only: {
+    es: "Solo los encargados y los due\xF1os pueden cambiar los aires.",
+    en: "Only managers and owners can change the air conditioners."
   }
 };
 function answer(status) {
@@ -258,6 +262,23 @@ async function handleAcCommand(caller, body, ports) {
   }
   return { httpStatus: 200, body: answer(status) };
 }
+var STAFF_UNITS = [...new Set(Object.values(AC_CLIMATE))].map((e) => e.replace(/^climate\./, ""));
+
+// island/ac-gateway/src/testPage.ts
+var TEST_PAGE = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Living room AC test</title>
+<style>body{font:18px system-ui;margin:0;padding:20px;background:#0a1310;color:#ede7da}h1{font-size:24px}button{font:inherit;padding:16px;margin:6px 6px 6px 0;border-radius:12px;border:1px solid #8fb8a8;background:#0e1915;color:#ede7da;min-width:110px}button.on{background:#8fb8a8;color:#0a1310}#s{margin:14px 0;min-height:3em}</style></head><body>
+<h1>Hacienda living room</h1><div id="s">Loading...</div>
+<div><button data-c='{"on":true}'>On</button><button data-c='{"on":false}'>Off</button></div>
+<div><button data-c='{"level":"cool"}'>Cool</button><button data-c='{"level":"cold"}'>Cold</button><button data-c='{"level":"coldest"}'>Coldest</button></div>
+<div><button data-c='{"fan":"low"}'>Fan low</button><button data-c='{"fan":"auto"}'>Fan auto</button></div>
+<script>
+const pass=decodeURIComponent(location.hash.slice(1)),room='living-room',s=document.getElementById('s');
+async function api(b){const r=await fetch('/ac',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pass,...b})});return r.json()}
+function show(u,m){s.textContent=(u?('Now: '+(u.on?'on':'off')+', '+u.level+', fan '+u.fan+(u.turbo?', turbo':'')):'')+(m?' | '+m:'')}
+async function refresh(m){try{const j=await api({action:'state'});const r=(j.rooms||[]).find(x=>x.slug===room);r&&r.unit?show(r.unit,m):show(null,j.message_en||'No reading')}catch(e){show(null,'Cannot reach the island')}}
+document.querySelectorAll('button').forEach(b=>b.onclick=async()=>{show(null,'Sending...');try{const j=await api({action:'command',room,command:JSON.parse(b.dataset.c),client_id:crypto.randomUUID()});await refresh(j.message_en||j.status)}catch(e){show(null,'Cannot reach the island')}});
+refresh();setInterval(()=>refresh(),5000);
+</script></body></html>`;
 
 // island/ac-gateway/src/gateway.ts
 var OPTIONS_FILE = process.env.OPTIONS_FILE ?? "/data/options.json";
@@ -377,6 +398,7 @@ function portsFor(pass, env) {
     today: () => panamaToday(env.now())
   };
 }
+var SELF_ORIGIN = "https://ac.diabonitoresorts.com:8443";
 var NO_STORE = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
 function corsHeaders(origin, origins) {
   if (!origin || !origins.includes(origin)) return {};
@@ -398,8 +420,11 @@ async function handle(req, opts, env) {
     const probe = await env.ha("/api/");
     return reply(200, { ok: true, island: true, ha: probe ? probe.status : 0 });
   }
+  if (req.method === "GET" && req.path === "/test") {
+    return { status: 200, headers: { "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" }, body: TEST_PAGE };
+  }
   if (req.method !== "POST" || req.path !== "/ac") return reply(404, { error: "not_found" });
-  if (req.origin && !opts.origins.includes(req.origin)) return reply(403, answer("refused"));
+  if (req.origin && req.origin !== SELF_ORIGIN && !opts.origins.includes(req.origin)) return reply(403, answer("refused"));
   let body;
   try {
     const parsed = JSON.parse(req.body);
