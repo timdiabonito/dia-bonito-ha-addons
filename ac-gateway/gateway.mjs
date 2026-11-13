@@ -40,11 +40,6 @@ async function key(secret) {
   return crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
 var HEADER = b64url(enc.encode(JSON.stringify({ alg: "HS256", typ: "ACP" })));
-async function signPass(claims, secret) {
-  const body = `${HEADER}.${b64url(enc.encode(JSON.stringify(claims)))}`;
-  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await key(secret), enc.encode(body)));
-  return `${body}.${b64url(sig)}`;
-}
 async function verifyPass(token, secret, nowMs) {
   if (typeof token !== "string" || token.length > 4096 || !secret) return null;
   const parts = token.split(".");
@@ -269,51 +264,7 @@ async function handleAcCommand(caller, body, ports) {
 }
 var STAFF_UNITS = [...new Set(Object.values(AC_CLIMATE))].map((e) => e.replace(/^climate\./, ""));
 
-// island/ac-gateway/src/testPage.ts
-var TEST_PAGE = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Living room AC test</title>
-<style>body{font:18px system-ui;margin:0;padding:20px;background:#0a1310;color:#ede7da}h1{font-size:24px}button{font:inherit;padding:16px;margin:6px 6px 6px 0;border-radius:12px;border:1px solid #8fb8a8;background:#0e1915;color:#ede7da;min-width:110px}button.on{background:#8fb8a8;color:#0a1310}#s{margin:14px 0;min-height:3em}</style></head><body>
-<h1>Hacienda living room</h1><div id="s">Loading...</div>
-<div><button data-c='{"on":true}'>On</button><button data-c='{"on":false}'>Off</button></div>
-<div><button data-c='{"level":"cool"}'>Cool</button><button data-c='{"level":"cold"}'>Cold</button><button data-c='{"level":"coldest"}'>Coldest</button></div>
-<div><button data-c='{"fan":"low"}'>Fan low</button><button data-c='{"fan":"auto"}'>Fan auto</button></div>
-<script>
-const pass=decodeURIComponent(location.hash.slice(1)),room='living-room',s=document.getElementById('s');
-async function api(b){const r=await fetch('/ac',{method:'POST',headers:{'Content-Type':'text/plain'},body:JSON.stringify({pass,...b})});return r.json()}
-function show(u,m){s.textContent=(u?('Now: '+(u.on?'on':'off')+', '+u.level+', fan '+u.fan+(u.turbo?', turbo':'')):'')+(m?' | '+m:'')}
-async function refresh(m){try{const j=await api({action:'state'});const r=(j.rooms||[]).find(x=>x.slug===room);r&&r.unit?show(r.unit,m):show(null,j.message_en||'No reading')}catch(e){show(null,'Cannot reach the island')}}
-document.querySelectorAll('button').forEach(b=>b.onclick=async()=>{show(null,'Sending...');try{const j=await api({action:'command',room,command:JSON.parse(b.dataset.c),client_id:crypto.randomUUID()});await refresh(j.message_en||j.status)}catch(e){show(null,'Cannot reach the island')}});
-refresh();setInterval(()=>refresh(),5000);
-</script></body></html>`;
-
 // island/ac-gateway/src/gateway.ts
-import { createHmac, timingSafeEqual } from "node:crypto";
-function testCode(secret, expMinutes) {
-  const mac = createHmac("sha256", secret).update(`living-room-test|${expMinutes}`).digest("hex").slice(0, 10);
-  return expMinutes.toString(36).padStart(5, "0") + mac;
-}
-async function passFromTestCode(code, secret, nowMs) {
-  if (!/^[0-9a-z]{5}[0-9a-f]{10}$/.test(code)) return null;
-  const expMinutes = parseInt(code.slice(0, 5), 36);
-  const expSeconds = expMinutes * 60;
-  if (expSeconds * 1e3 <= nowMs || expSeconds * 1e3 > nowMs + 4 * 36e5) return null;
-  const want = Buffer.from(testCode(secret, expMinutes));
-  const have = Buffer.from(code);
-  if (want.length !== have.length || !timingSafeEqual(want, have)) return null;
-  const today = panamaToday(nowMs);
-  return signPass(
-    {
-      v: 1,
-      stay_id: "tim-test",
-      guest_id: "tim-test",
-      arrives_on: today,
-      departs_on: today,
-      rooms: [{ slug: "living-room", name_es: "Sala", name_en: "Living Room" }],
-      iat: Math.floor(nowMs / 1e3),
-      exp: expSeconds
-    },
-    secret
-  );
-}
 var OPTIONS_FILE = process.env.OPTIONS_FILE ?? "/data/options.json";
 var STATE_FILE = process.env.STATE_FILE ?? "/data/ac-gateway-state.json";
 var HA_BASE = (process.env.HA_BASE ?? "http://supervisor/core").replace(/\/+$/, "");
@@ -431,7 +382,6 @@ function portsFor(pass, env) {
     today: () => panamaToday(env.now())
   };
 }
-var SELF_ORIGIN = "https://ac.diabonitoresorts.com:8443";
 var NO_STORE = { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" };
 function corsHeaders(origin, origins) {
   if (!origin || !origins.includes(origin)) return {};
@@ -453,16 +403,8 @@ async function handle(req, opts, env) {
     const probe = await env.ha("/api/");
     return reply(200, { ok: true, island: true, ha: probe ? probe.status : 0 });
   }
-  if (req.method === "GET" && req.path.startsWith("/t/")) {
-    const pass2 = await passFromTestCode(req.path.slice(3), opts.pass_secret, env.now());
-    if (!pass2) return { status: 404, headers: { "Cache-Control": "no-store", "Content-Type": "text/plain" }, body: "Not found" };
-    return { status: 302, headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", Location: `/test#${pass2}` }, body: "" };
-  }
-  if (req.method === "GET" && req.path === "/test") {
-    return { status: 200, headers: { "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Referrer-Policy": "no-referrer" }, body: TEST_PAGE };
-  }
   if (req.method !== "POST" || req.path !== "/ac") return reply(404, { error: "not_found" });
-  if (req.origin && req.origin !== SELF_ORIGIN && !opts.origins.includes(req.origin)) return reply(403, answer("refused"));
+  if (req.origin && !opts.origins.includes(req.origin)) return reply(403, answer("refused"));
   let body;
   try {
     const parsed = JSON.parse(req.body);
@@ -595,6 +537,5 @@ export {
   loadOptions,
   panamaToday,
   portsFor,
-  start,
-  testCode
+  start
 };
