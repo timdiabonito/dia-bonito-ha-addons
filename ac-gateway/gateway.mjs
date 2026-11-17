@@ -249,9 +249,10 @@ async function gate(caller, ports) {
 }
 async function readAcUnit(ports, entityId) {
   const unit = unitFromHa(await ports.readUnit(entityId).catch(() => null));
-  if (!unit || unit.on || !ports.readReturnPending) return unit;
-  const pending = await ports.readReturnPending(entityId).catch(() => false);
-  return pending ? { ...unit, return_pending: true } : unit;
+  if (!unit) return unit;
+  const pending = !unit.on && ports.readReturnPending ? await ports.readReturnPending(entityId).catch(() => false) : false;
+  const flag = ports.readFlag ? await ports.readFlag(entityId).catch(() => false) : false;
+  return { ...unit, ...pending ? { return_pending: true } : {}, ...flag ? { flag: true } : {} };
 }
 async function handleAcState(caller, ports) {
   const g = await gate(caller, ports);
@@ -385,6 +386,16 @@ function portsFor(pass, env) {
       const res = await env.ha(`/api/states/${encodeURIComponent(entityId)}`);
       if (!res || !res.ok) return null;
       return readingFromHaJson(await res.json().catch(() => null));
+    },
+    async readReturnPending(entityId) {
+      const res = await env.ha(`/api/states/${encodeURIComponent("timer.ac_offreturn_" + entityId.replace(/^climate\./, ""))}`);
+      if (!res || !res.ok) return false;
+      return (await res.json().catch(() => null))?.state === "active";
+    },
+    async readFlag(entityId) {
+      const res = await env.ha(`/api/states/${encodeURIComponent("input_boolean.ac_check_" + entityId.replace(/^climate\./, ""))}`);
+      if (!res || !res.ok) return false;
+      return (await res.json().catch(() => null))?.state === "on";
     },
     async lastTurboAt(room) {
       const hit = [...env.log.rows].reverse().find((r) => r.room === room && r.status === "sent" && r.command.turbo === true);
