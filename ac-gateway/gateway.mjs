@@ -81,9 +81,11 @@ var EXTRA_ROOM_NAMES = {
 var AC_LIMIT = 20;
 var AC_WINDOW_MS = 10 * 6e4;
 var ALERT_WINDOW_MS = 60 * 6e4;
+var COMMAND_KEYS = ["on", "level", "fan", "swing", "sleep", "turbo"];
 function checkCommand(raw) {
-  if (!raw || typeof raw !== "object") return { ok: false, reason: "empty" };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "empty" };
   const input = raw;
+  if (Object.keys(input).some((k) => !COMMAND_KEYS.includes(k))) return { ok: false, reason: "bad_key" };
   const command = {};
   if ("on" in input) {
     if (typeof input.on !== "boolean") return { ok: false, reason: "bad_power" };
@@ -97,9 +99,21 @@ function checkCommand(raw) {
     if (!FANS.includes(input.fan)) return { ok: false, reason: "bad_fan" };
     command.fan = input.fan;
   }
+  if ("swing" in input) {
+    if (typeof input.swing !== "boolean") return { ok: false, reason: "bad_swing" };
+    command.swing = input.swing;
+  }
+  if ("sleep" in input) {
+    if (typeof input.sleep !== "boolean") return { ok: false, reason: "bad_sleep" };
+    command.sleep = input.sleep;
+  }
   if ("turbo" in input) {
     if (input.turbo !== true || Object.keys(input).length !== 1) return { ok: false, reason: "bad_turbo" };
     return { ok: true, command: { turbo: true } };
+  }
+  if (command.sleep === true) {
+    const others = Object.keys(command).filter((k) => k !== "sleep" && k !== "on");
+    if (others.length > 0 || command.on === false) return { ok: false, reason: "bad_sleep" };
   }
   if (Object.keys(command).length === 0) return { ok: false, reason: "empty" };
   return { ok: true, command };
@@ -110,22 +124,41 @@ function fanForLevel(level, current) {
   if (!wanted) return null;
   return FAN_RANK[current] < FAN_RANK[wanted] ? wanted : null;
 }
-function toHaOrder(entityId, command, currentFan) {
-  if (command.turbo) return { entity_id: entityId, turbo: true };
-  const lift = command.level !== void 0 && command.fan === void 0 ? fanForLevel(command.level, currentFan) : null;
+function toHaOrder(entityId, command, currentFan, actor = "guest") {
+  if (command.turbo) return { entity_id: entityId, actor, turbo: true };
+  const lift = actor === "guest" && command.level !== void 0 && command.fan === void 0 && command.sleep !== true ? fanForLevel(command.level, currentFan) : null;
   const setpoint = command.level !== void 0 ? Math.max(LEVEL_SETPOINT_C[command.level], FLOOR_SETPOINT_C) : void 0;
+  const sleep = command.sleep !== void 0 ? command.sleep : command.level !== void 0 || command.fan !== void 0 || command.on === true ? false : void 0;
   return {
     entity_id: entityId,
+    actor,
     ...command.on !== void 0 ? { on: command.on } : {},
     ...command.on === true || command.level !== void 0 ? { mode: "cool" } : {},
     ...setpoint !== void 0 ? { setpoint_c: setpoint } : {},
-    ...command.fan !== void 0 ? { fan: command.fan } : lift ? { fan: lift, lift: true } : {}
+    // Goodnight keeps the fan on auto.
+    ...command.sleep === true ? { fan: "auto" } : command.fan !== void 0 ? { fan: command.fan } : lift ? { fan: lift, lift: true } : {},
+    ...command.swing !== void 0 ? { swing: command.swing } : {},
+    ...sleep !== void 0 ? { sleep } : {}
   };
 }
 function allowedRooms(args) {
   const known = args.allSlugs.filter((s) => AC_CLIMATE[s]);
-  if (args.isLead) return known;
-  return known.filter((s) => SHARED_ROOMS.includes(s) || s === args.claimSlug);
+  if (args.claimSlug && known.includes(args.claimSlug)) return [args.claimSlug];
+  return known.filter((s) => SHARED_ROOMS.includes(s));
+}
+function readingFromHaJson(j) {
+  if (!j || typeof j !== "object") return null;
+  const o = j;
+  if (typeof o.state !== "string") return null;
+  const a = o.attributes ?? {};
+  const str = (v) => typeof v === "string" ? v : null;
+  return {
+    state: o.state,
+    temperature: typeof a.temperature === "number" ? a.temperature : null,
+    fan_mode: str(a.fan_mode),
+    swing_mode: str(a.swing_mode),
+    preset_mode: str(a.preset_mode)
+  };
 }
 function unitFromHa(ha) {
   if (!ha || ha.state === "unavailable" || ha.state === "unknown") return null;
@@ -135,7 +168,9 @@ function unitFromHa(ha) {
   const fan = f === "strong" ? "high" : f === "quiet" ? "low" : FANS.includes(f) ? f : "auto";
   const on = ha.state !== "off";
   const turbo = on && f === "strong";
-  return { on, level, fan, ...turbo ? { turbo: true, turbo_until: ha.turbo_until ?? null } : {} };
+  const swing = ha.swing_mode == null ? true : ha.swing_mode !== "off";
+  const sleep = on && !turbo && ha.preset_mode === "sleep";
+  return { on, level, fan, swing, sleep, ...turbo ? { turbo: true } : {} };
 }
 var COPY = {
   sent: { es: "Enviado a la unidad.", en: "Sent to the unit." },
@@ -161,8 +196,8 @@ var COPY = {
     en: "This works while you are staying on the island."
   },
   not_your_room: {
-    es: "Solo puedes cambiar el aire de tu propio cuarto y la sala.",
-    en: "You can only change the air conditioning in your own room and the living room."
+    es: "Solo puedes cambiar el aire de tu propio cuarto.",
+    en: "You can only change the air conditioning in your own room."
   },
   off_island: {
     es: "Con\xE9ctate al Wi-Fi de la isla para usar el control del aire.",
@@ -171,6 +206,10 @@ var COPY = {
   unavailable: {
     es: "El control del aire no est\xE1 disponible en este momento.",
     en: "The air conditioning remote is not available right now."
+  },
+  partial: {
+    es: "Algunos cuartos no respondieron. Prueba de nuevo.",
+    en: "Some rooms did not answer. Try again."
   },
   staff_only: {
     es: "Solo los encargados y los due\xF1os pueden cambiar los aires.",
@@ -193,14 +232,26 @@ async function gate(caller, ports) {
   if (!stay || stay.status === "cancelled" || today < stay.arrives_on || today > stay.departs_on) {
     return { ok: false, outcome: { httpStatus: 200, body: answer("not_in_stay") } };
   }
-  const [claimSlug, lead, all] = await Promise.all([
+  const [claimSlug, all, granted] = await Promise.all([
     ports.findClaimSlug(caller.stay_id, caller.guest_id),
-    ports.isLead(caller.guest_id),
-    ports.listRooms()
+    ports.listRooms(),
+    ports.grantedSlugs ? ports.grantedSlugs() : Promise.resolve(null)
   ]);
-  const slugs = allowedRooms({ isLead: lead, claimSlug, allSlugs: all.map((r) => r.slug) });
+  const slugs = granted ? all.map((r) => r.slug).filter((s) => granted.includes(s) && AC_CLIMATE[s]) : allowedRooms({ claimSlug, allSlugs: all.map((r) => r.slug) });
   if (slugs.length === 0) return { ok: false, outcome: { httpStatus: 200, body: answer("no_room") } };
-  return { ok: true, stayId: caller.stay_id, guestId: caller.guest_id, rooms: all.filter((r) => slugs.includes(r.slug)) };
+  return {
+    ok: true,
+    stayId: caller.stay_id,
+    guestId: caller.guest_id,
+    rooms: all.filter((r) => slugs.includes(r.slug)),
+    claimSlug
+  };
+}
+async function readAcUnit(ports, entityId) {
+  const unit = unitFromHa(await ports.readUnit(entityId).catch(() => null));
+  if (!unit || unit.on || !ports.readReturnPending) return unit;
+  const pending = await ports.readReturnPending(entityId).catch(() => false);
+  return pending ? { ...unit, return_pending: true } : unit;
 }
 async function handleAcState(caller, ports) {
   const g = await gate(caller, ports);
@@ -210,7 +261,7 @@ async function handleAcState(caller, ports) {
       slug: r.slug,
       name_es: r.name_es,
       name_en: r.name_en,
-      unit: unitFromHa(await ports.readUnit(AC_CLIMATE[r.slug]).catch(() => null))
+      unit: await readAcUnit(ports, AC_CLIMATE[r.slug])
     }))
   );
   return { httpStatus: 200, body: { rooms } };
@@ -248,7 +299,7 @@ async function handleAcCommand(caller, body, ports) {
   }
   const entityId = AC_CLIMATE[slug];
   const current = unitFromHa(await ports.readUnit(entityId).catch(() => null));
-  const order = toHaOrder(entityId, checked.command, current?.fan ?? "auto");
+  const order = toHaOrder(entityId, checked.command, current?.fan ?? "auto", "guest");
   let reached = false;
   try {
     reached = await ports.callHomeAssistant(order);
@@ -325,24 +376,15 @@ function panamaToday(nowMs) {
 function portsFor(pass, env) {
   return {
     findStay: async () => ({ arrives_on: pass.arrives_on, departs_on: pass.departs_on, status: "in_house" }),
-    // The pass lists exactly the rooms this guest may control, so the booker rule is already applied.
+    // The pass lists exactly the rooms this guest may control (the cloud applied the own room rule
+    // when it made the pass), so the pass is the answer and no claim is looked up here.
     findClaimSlug: async () => null,
-    isLead: async () => true,
+    grantedSlugs: async () => pass.rooms.map((r) => r.slug),
     listRooms: async () => pass.rooms,
     async readUnit(entityId) {
       const res = await env.ha(`/api/states/${encodeURIComponent(entityId)}`);
       if (!res || !res.ok) return null;
-      const j = await res.json().catch(() => null);
-      if (!j || typeof j.state !== "string") return null;
-      const fan = j.attributes?.fan_mode ?? null;
-      let turboUntil = null;
-      if (fan === "strong") {
-        const timerId = `timer.ac_turbo_${entityId.replace(/^climate\./, "")}`;
-        const tr = await env.ha(`/api/states/${encodeURIComponent(timerId)}`);
-        const tj = tr && tr.ok ? await tr.json().catch(() => null) : null;
-        if (tj?.state === "active") turboUntil = tj.attributes?.finishes_at ?? null;
-      }
-      return { state: j.state, temperature: j.attributes?.temperature ?? null, fan_mode: fan, turbo_until: turboUntil };
+      return readingFromHaJson(await res.json().catch(() => null));
     },
     async lastTurboAt(room) {
       const hit = [...env.log.rows].reverse().find((r) => r.room === room && r.status === "sent" && r.command.turbo === true);
