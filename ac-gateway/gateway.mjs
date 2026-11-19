@@ -128,7 +128,7 @@ function toHaOrder(entityId, command, currentFan, actor = "guest") {
   if (command.turbo) return { entity_id: entityId, actor, turbo: true };
   const lift = actor === "guest" && command.level !== void 0 && command.fan === void 0 && command.sleep !== true ? fanForLevel(command.level, currentFan) : null;
   const setpoint = command.level !== void 0 ? Math.max(LEVEL_SETPOINT_C[command.level], FLOOR_SETPOINT_C) : void 0;
-  const sleep = command.sleep !== void 0 ? command.sleep : command.level !== void 0 || command.fan !== void 0 || command.on === true ? false : void 0;
+  const sleep = command.sleep !== void 0 ? command.sleep : command.level !== void 0 || command.on === true ? false : void 0;
   return {
     entity_id: entityId,
     actor,
