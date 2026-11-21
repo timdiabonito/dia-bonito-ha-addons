@@ -78,8 +78,8 @@ var AC_CLIMATE = {
 var EXTRA_ROOM_NAMES = {
   [LIVING_ROOM_SLUG]: { es: "Sala", en: "Living room" }
 };
-var AC_LIMIT = 20;
-var AC_WINDOW_MS = 10 * 6e4;
+var AC_LIMIT = 10;
+var AC_WINDOW_MS = 6e4;
 var ALERT_WINDOW_MS = 60 * 6e4;
 var COMMAND_KEYS = ["on", "level", "fan", "swing", "sleep", "turbo"];
 function checkCommand(raw) {
@@ -155,6 +155,7 @@ function readingFromHaJson(j) {
   return {
     state: o.state,
     temperature: typeof a.temperature === "number" ? a.temperature : null,
+    current_temperature: typeof a.current_temperature === "number" ? a.current_temperature : null,
     fan_mode: str(a.fan_mode),
     swing_mode: str(a.swing_mode),
     preset_mode: str(a.preset_mode)
@@ -179,8 +180,8 @@ var COPY = {
     en: "We got your ask and we will get to it shortly."
   },
   throttled: {
-    es: "Ya estamos en eso. Dale un ratito a la unidad.",
-    en: "We are on it. Give the unit a little time."
+    es: "Demasiados cambios. Espera 60 segundos y vuelve a intentar.",
+    en: "Too many changes. Please wait 60 seconds, then try again."
   },
   turbo_wait: {
     es: "El turbo necesita descansar un rato. Prueba de nuevo en un rato.",
@@ -388,12 +389,12 @@ function portsFor(pass, env) {
       return readingFromHaJson(await res.json().catch(() => null));
     },
     async readReturnPending(entityId) {
-      const res = await env.ha(`/api/states/${encodeURIComponent("timer.ac_offreturn_" + entityId.replace(/^climate\./, ""))}`);
+      const res = await env.ha(`/api/states/${encodeURIComponent(`timer.ac_offreturn_${entityId.replace(/^climate\./, "")}`)}`);
       if (!res || !res.ok) return false;
       return (await res.json().catch(() => null))?.state === "active";
     },
     async readFlag(entityId) {
-      const res = await env.ha(`/api/states/${encodeURIComponent("input_boolean.ac_check_" + entityId.replace(/^climate\./, ""))}`);
+      const res = await env.ha(`/api/states/${encodeURIComponent(`input_boolean.ac_check_${entityId.replace(/^climate\./, "")}`)}`);
       if (!res || !res.ok) return false;
       return (await res.json().catch(() => null))?.state === "on";
     },
