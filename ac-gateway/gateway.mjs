@@ -146,6 +146,18 @@ function allowedRooms(args) {
   if (args.claimSlug && known.includes(args.claimSlug)) return [args.claimSlug];
   return known.filter((s) => SHARED_ROOMS.includes(s));
 }
+function ecoEntityId(climateEntityId) {
+  return `input_text.ac_req_${climateEntityId.replace(/^climate\./, "")}`;
+}
+function ecoRequestedC(eco, realC) {
+  if (typeof eco !== "string" || typeof realC !== "number") return null;
+  const parts = eco.split(",").map((x) => x.trim());
+  if (parts.length !== 3 || parts.some((x) => x === "")) return null;
+  const [requested, , expected] = parts.map(Number);
+  if (![requested, expected].every(Number.isFinite) || !Number.isFinite(Number(parts[1]))) return null;
+  if (Math.abs(expected - realC) > 0.05) return null;
+  return requested < realC ? requested : null;
+}
 function readingFromHaJson(j) {
   if (!j || typeof j !== "object") return null;
   const o = j;
@@ -163,7 +175,8 @@ function readingFromHaJson(j) {
 }
 function unitFromHa(ha) {
   if (!ha || ha.state === "unavailable" || ha.state === "unknown") return null;
-  const t = typeof ha.temperature === "number" ? ha.temperature : 26;
+  const real = typeof ha.temperature === "number" ? ha.temperature : 26;
+  const t = ecoRequestedC(ha.eco, ha.temperature) ?? real;
   const level = t <= 24.5 ? "coldest" : t <= 25.5 ? "cold" : "cool";
   const f = ha.fan_mode ?? "auto";
   const fan = f === "strong" ? "high" : f === "quiet" ? "low" : FANS.includes(f) ? f : "auto";
@@ -384,9 +397,15 @@ function portsFor(pass, env) {
     grantedSlugs: async () => pass.rooms.map((r) => r.slug),
     listRooms: async () => pass.rooms,
     async readUnit(entityId) {
-      const res = await env.ha(`/api/states/${encodeURIComponent(entityId)}`);
+      const [res, ecoRes] = await Promise.all([
+        env.ha(`/api/states/${encodeURIComponent(entityId)}`),
+        env.ha(`/api/states/${encodeURIComponent(ecoEntityId(entityId))}`).catch(() => null)
+      ]);
       if (!res || !res.ok) return null;
-      return readingFromHaJson(await res.json().catch(() => null));
+      const reading = readingFromHaJson(await res.json().catch(() => null));
+      if (!reading) return reading;
+      const eco = ecoRes && ecoRes.ok ? (await ecoRes.json().catch(() => null))?.state : null;
+      return typeof eco === "string" ? { ...reading, eco } : reading;
     },
     async readReturnPending(entityId) {
       const res = await env.ha(`/api/states/${encodeURIComponent(`timer.ac_offreturn_${entityId.replace(/^climate\./, "")}`)}`);
