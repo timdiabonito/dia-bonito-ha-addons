@@ -68,6 +68,8 @@ var LEVELS = ["cool", "cold", "coldest"];
 var LEVEL_SETPOINT_C = { cool: 26, cold: 25, coldest: 24 };
 var FLOOR_SETPOINT_C = 23;
 var FANS = ["low", "medium", "high", "auto"];
+var ECO_SETPOINT_C = 28;
+var ECO_FAN = "low";
 var TURBO_COOLDOWN_MS = 60 * 6e4;
 var LIVING_ROOM_SLUG = "living-room";
 var SHARED_ROOMS = [LIVING_ROOM_SLUG];
@@ -81,7 +83,7 @@ var EXTRA_ROOM_NAMES = {
 var AC_LIMIT = 10;
 var AC_WINDOW_MS = 6e4;
 var ALERT_WINDOW_MS = 60 * 6e4;
-var COMMAND_KEYS = ["on", "level", "fan", "swing", "sleep", "turbo"];
+var COMMAND_KEYS = ["on", "level", "fan", "swing", "sleep", "turbo", "eco"];
 function checkCommand(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, reason: "empty" };
   const input = raw;
@@ -111,6 +113,10 @@ function checkCommand(raw) {
     if (input.turbo !== true || Object.keys(input).length !== 1) return { ok: false, reason: "bad_turbo" };
     return { ok: true, command: { turbo: true } };
   }
+  if ("eco" in input) {
+    if (input.eco !== true || Object.keys(input).length !== 1) return { ok: false, reason: "bad_eco" };
+    return { ok: true, command: { eco: true } };
+  }
   if (command.sleep === true) {
     const others = Object.keys(command).filter((k) => k !== "sleep" && k !== "on");
     if (others.length > 0 || command.on === false) return { ok: false, reason: "bad_sleep" };
@@ -126,6 +132,9 @@ function fanForLevel(level, current) {
 }
 function toHaOrder(entityId, command, currentFan, actor = "guest") {
   if (command.turbo) return { entity_id: entityId, actor, turbo: true };
+  if (command.eco) {
+    return { entity_id: entityId, actor, on: true, setpoint_c: ECO_SETPOINT_C, fan: ECO_FAN, sleep: false };
+  }
   const lift = actor === "guest" && command.level !== void 0 && command.fan === void 0 && command.sleep !== true ? fanForLevel(command.level, currentFan) : null;
   const setpoint = command.level !== void 0 ? Math.max(LEVEL_SETPOINT_C[command.level], FLOOR_SETPOINT_C) : void 0;
   const sleep = command.sleep !== void 0 ? command.sleep : command.level !== void 0 || command.on === true ? false : void 0;
@@ -173,6 +182,12 @@ function readingFromHaJson(j) {
     preset_mode: str(a.preset_mode)
   };
 }
+function isEcoReading(ha, fanMode) {
+  if (ha.state !== "cool" || ha.temperature !== ECO_SETPOINT_C) return false;
+  if (fanMode !== "low" && fanMode !== "quiet") return false;
+  if (ha.preset_mode === "sleep") return false;
+  return ecoRequestedC(ha.eco, ha.temperature) === null;
+}
 function unitFromHa(ha) {
   if (!ha || ha.state === "unavailable" || ha.state === "unknown") return null;
   const real = typeof ha.temperature === "number" ? ha.temperature : 26;
@@ -184,7 +199,8 @@ function unitFromHa(ha) {
   const turbo = on && f === "strong";
   const swing = ha.swing_mode == null ? true : ha.swing_mode !== "off";
   const sleep = on && !turbo && ha.preset_mode === "sleep";
-  return { on, level, fan, swing, sleep, ...turbo ? { turbo: true } : {} };
+  const eco = isEcoReading(ha, f);
+  return { on, level, fan, swing, sleep, ...turbo ? { turbo: true } : {}, ...eco ? { eco: true } : {} };
 }
 var COPY = {
   sent: { es: "Enviado a la unidad.", en: "Sent to the unit." },
